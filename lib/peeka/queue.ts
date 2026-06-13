@@ -7,6 +7,7 @@ import { Client } from "@upstash/qstash"
 export interface DiffJob {
   project: string
   branch: string
+  defaultBranch: string
   buildId: string
   commit: string
   chunk: number

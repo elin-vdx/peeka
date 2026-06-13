@@ -29,10 +29,28 @@ import type {
   SnapshotResult,
 } from "./types"
 
+// Resolve the baseline for a snapshot: prefer the build's own branch, then
+// fall back to the default branch (so PR branches diff against main).
+async function resolveBaseline(
+  project: string,
+  branch: string,
+  defaultBranch: string,
+  name: string,
+  variant: string,
+) {
+  const own = await getBaseline(project, branch, name, variant)
+  if (own) return own
+  if (slug(branch) !== slug(defaultBranch)) {
+    return getBaseline(project, defaultBranch, name, variant)
+  }
+  return null
+}
+
 // Diff one chunk of a build and persist its results + done marker.
 export async function processChunk(
   project: string,
   branch: string,
+  defaultBranch: string,
   buildId: string,
   commit: string,
   chunkIndex: number,
@@ -47,7 +65,13 @@ export async function processChunk(
       continue
     }
 
-    const baseline = await getBaseline(project, branch, input.name, input.variant)
+    const baseline = await resolveBaseline(
+      project,
+      branch,
+      defaultBranch,
+      input.name,
+      input.variant,
+    )
 
     if (!baseline) {
       const { width, height } = readPngSize(newBuf)

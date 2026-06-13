@@ -1,0 +1,62 @@
+# Peeka visual snapshots — runs in your COMPONENT repo.
+#
+# On PRs: captures Storybook screenshots, uploads to Peeka, which diffs against
+# the branch baselines and posts a commit status.
+# On push to dev: same capture, but Peeka auto-promotes the snapshots to the
+# baseline (because branch == defaultBranch), so PR branches have something to
+# diff against. NOTE: auto-baseline keys off the repo's actual default branch
+# (github.event.repository.default_branch); keep that set to `dev` in GitHub.
+#
+# Setup (one-time, in repo Settings → Secrets and variables → Actions):
+#   secrets.PEEKA_URL            e.g. https://peeka.your.co
+#   secrets.PEEKA_INGEST_TOKEN   the shared ingest secret
+#   vars.PEEKA_PROJECT           e.g. web-app   (a repository variable)
+
+name: peeka
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+
+jobs:
+  visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Storybook test-runner drives a real browser, so install it.
+      - run: npx playwright install --with-deps chromium
+
+      # Build a static Storybook and serve it while the test-runner captures.
+      - run: npm run build-storybook --silent
+      # ^ assumes "build-storybook" outputs to ./storybook-static
+
+      - name: Capture snapshots
+        run: |
+          npx concurrently -k -s first -n SB,TEST \
+            "npx http-server storybook-static --port 6006 --silent" \
+            "npx wait-on tcp:6006 && npx test-storybook --url http://127.0.0.1:6006"
+        # The test-runner config (.storybook/test-runner.ts) writes PNGs to
+        # ./peeka-snapshots as a side effect of postVisit.
+
+      - name: Upload to Peeka
+        run: node scripts/peeka-upload.mjs
+        env:
+          PEEKA_URL: ${{ secrets.PEEKA_URL }}
+          PEEKA_INGEST_TOKEN: ${{ secrets.PEEKA_INGEST_TOKEN }}
+          PEEKA_PROJECT: ${{ vars.PEEKA_PROJECT }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GIT_OWNER: ${{ github.repository_owner }}
+          GIT_REPO: ${{ github.event.repository.name }}
+          # On PRs use the PR head; on push use the pushed commit/ref.
+          GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          GIT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}

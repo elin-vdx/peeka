@@ -113,6 +113,7 @@ export async function POST(req: Request) {
     github: owner && repo ? { owner, repo, sha, prNumber } : undefined,
     status: "pending",
     autoBaseline,
+    defaultBranch: slug(defaultBranch),
     chunkCount: chunks.length,
     inputs,
     snapshots: [],
@@ -128,6 +129,7 @@ export async function POST(req: Request) {
         publishDiffJob({
           project,
           branch,
+          defaultBranch,
           buildId,
           commit,
           chunk: i,
@@ -137,7 +139,7 @@ export async function POST(req: Request) {
     )
   } else {
     for (let i = 0; i < chunks.length; i++) {
-      await processChunk(project, branch, buildId, commit, i, chunks[i])
+      await processChunk(project, branch, defaultBranch, buildId, commit, i, chunks[i])
     }
     await tryFinalize(project, branch, buildId)
   }

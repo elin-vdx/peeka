@@ -63,6 +63,9 @@ export interface BuildRecord {
   // When true, new/changed snapshots auto-promote to baseline on finalize
   // (set when the build's branch is the repo's default branch).
   autoBaseline: boolean
+  // The repo's default branch. PR branches fall back to its baselines when
+  // they have none of their own.
+  defaultBranch: string
   chunkCount: number // number of diff-worker chunks for this build
   inputs: SnapshotInput[] // recorded at ingest, before diffing
   snapshots: SnapshotResult[] // filled in once diffing finalizes

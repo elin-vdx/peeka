@@ -45,8 +45,16 @@ export async function POST(req: Request) {
     return Response.json({ error: "bad job payload" }, { status: 400 })
   }
 
-  const { project, branch, buildId, commit, chunk, inputs } = job
-  await processChunk(project, branch, buildId, commit, chunk, inputs)
+  const { project, branch, defaultBranch, buildId, commit, chunk, inputs } = job
+  await processChunk(
+    project,
+    branch,
+    defaultBranch,
+    buildId,
+    commit,
+    chunk,
+    inputs,
+  )
   const finalized = await tryFinalize(project, branch, buildId)
 
   return Response.json({ ok: true, chunk, finalized })
