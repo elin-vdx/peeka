@@ -2,30 +2,28 @@
 // here. This route is under /api so it is NOT gated by proxy.ts; it is
 // protected by a shared token instead.
 //
+// It stores uploads, writes a pending build record, and enqueues diff jobs
+// (one QStash message per chunk). It returns immediately — diffing happens
+// asynchronously in /api/diff-worker. When QStash is not configured, it
+// processes inline so local dev still works.
+//
 // Body: multipart/form-data
 //   project, branch, commit, owner, repo, sha, prNumber  (text fields)
 //   meta        JSON: { "<filename>": { "name": "...", "variant": "..." }, ... }
 //   snapshots   one or more PNG files (repeatable field)
 
 import { timingSafeEqual } from "node:crypto"
-import { recomputeBuild, reviewUrl, summarize } from "@/lib/peeka/build"
-import { diffPngBuffers, readPngSize } from "@/lib/peeka/diff"
-import { setCommitStatus } from "@/lib/peeka/github"
+import { chunk, reviewUrl } from "@/lib/peeka/build"
+import { processChunk, tryFinalize } from "@/lib/peeka/process"
+import { publishDiffJob, qstashConfigured } from "@/lib/peeka/queue"
 import {
-  diffKey as buildDiffKey,
-  getManifest,
-  getObject,
-  putManifest,
-  putObject,
+  putBuild,
   slug,
   snapshotKey as buildSnapshotKey,
+  putObject,
 } from "@/lib/peeka/storage"
-import type {
-  BranchManifest,
-  Build,
-  SnapshotResult,
-} from "@/lib/peeka/types"
-import { MAX_BUILDS } from "@/lib/peeka/types"
+import type { BuildRecord, SnapshotInput } from "@/lib/peeka/types"
+import { CHUNK_SIZE } from "@/lib/peeka/types"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -69,6 +67,12 @@ export async function POST(req: Request) {
   const prNumberRaw = form.get("prNumber")
   const prNumber = prNumberRaw ? Number(prNumberRaw) : undefined
 
+  // When the build's branch is the repo's default branch, new/changed
+  // snapshots auto-promote to baseline so PR branches have something to diff
+  // against. Defaults to "main" if the CI doesn't send it.
+  const defaultBranch = String(form.get("defaultBranch") ?? "main")
+  const autoBaseline = slug(branch) === slug(defaultBranch)
+
   let meta: Record<string, FileMeta> = {}
   const metaRaw = form.get("meta")
   if (typeof metaRaw === "string" && metaRaw.trim()) {
@@ -79,143 +83,71 @@ export async function POST(req: Request) {
     }
   }
 
-  const files = form.getAll("snapshots").filter((f): f is File => f instanceof File)
+  const files = form
+    .getAll("snapshots")
+    .filter((f): f is File => f instanceof File)
   if (files.length === 0) {
     return Response.json({ error: "no snapshots provided" }, { status: 400 })
   }
 
-  // Load (or initialize) the per-branch manifest up front. We do all diffing
-  // first and write the manifest exactly once at the end.
-  const manifest: BranchManifest =
-    (await getManifest(project, branch)) ??
-    ({
-      version: 1,
-      project: slug(project),
-      branch: slug(branch),
-      updatedAt: new Date().toISOString(),
-      baselines: {},
-      builds: [],
-    } satisfies BranchManifest)
-
-  const results: SnapshotResult[] = []
-
+  // Store every upload and record its input metadata (no diffing yet).
+  const inputs: SnapshotInput[] = []
   for (const file of files) {
-    // Resolve the snapshot's human name + variant: explicit meta wins,
-    // otherwise fall back to parsing "name__variant.png".
     const fileMeta = meta[file.name] ?? parseFilename(file.name)
     const name = fileMeta.name
     const variant = fileMeta.variant
-    const key = slug(name)
-    const baselineMapKey = `${key}::${slug(variant)}`
-
-    const buf = Buffer.from(await file.arrayBuffer())
     const newImageKey = buildSnapshotKey(project, commit, name, variant)
-    await putObject(newImageKey, buf, "image/png")
-
-    const baseline = manifest.baselines[baselineMapKey]
-
-    if (!baseline) {
-      const { width, height } = readPngSize(buf)
-      results.push({
-        name,
-        variant,
-        key,
-        newImageKey,
-        baselineKey: null,
-        diffKey: null,
-        width,
-        height,
-        status: "new",
-        mismatchedPixels: 0,
-        totalPixels: width * height,
-        percent: 0,
-        review: "needs_review",
-      })
-      continue
-    }
-
-    const baselineBuf = await getObject(baseline.imageKey)
-    if (!baselineBuf) {
-      // Manifest referenced a baseline that's gone; treat as new.
-      const { width, height } = readPngSize(buf)
-      results.push({
-        name,
-        variant,
-        key,
-        newImageKey,
-        baselineKey: null,
-        diffKey: null,
-        width,
-        height,
-        status: "new",
-        mismatchedPixels: 0,
-        totalPixels: width * height,
-        percent: 0,
-        review: "needs_review",
-      })
-      continue
-    }
-
-    const diff = diffPngBuffers(baselineBuf, buf)
-    const changed = diff.percent > 0
-    let diffKeyValue: string | null = null
-    if (changed && diff.diffPng) {
-      diffKeyValue = buildDiffKey(project, commit, name, variant)
-      await putObject(diffKeyValue, diff.diffPng, "image/png")
-    }
-
-    results.push({
-      name,
-      variant,
-      key,
-      newImageKey,
-      baselineKey: baseline.imageKey,
-      diffKey: diffKeyValue,
-      width: diff.width,
-      height: diff.height,
-      status: changed ? "changed" : "unchanged",
-      mismatchedPixels: diff.mismatchedPixels,
-      totalPixels: diff.totalPixels,
-      percent: diff.percent,
-      review: changed ? "needs_review" : "approved",
-    })
+    await putObject(newImageKey, Buffer.from(await file.arrayBuffer()), "image/png")
+    inputs.push({ name, variant, key: slug(name), newImageKey })
   }
 
   const buildId = `${slug(commit).slice(0, 8)}-${Date.now().toString(36)}`
-  const build: Build = recomputeBuild({
+  const chunks = chunk(inputs, CHUNK_SIZE)
+
+  const build: BuildRecord = {
     id: buildId,
-    commit,
+    project: slug(project),
     branch: slug(branch),
+    commit,
     createdAt: new Date().toISOString(),
     github: owner && repo ? { owner, repo, sha, prNumber } : undefined,
     status: "pending",
-    snapshots: results,
-    summary: summarize(results),
-  })
+    autoBaseline,
+    chunkCount: chunks.length,
+    inputs,
+    snapshots: [],
+    summary: { total: inputs.length, changed: 0, new: 0, unchanged: 0 },
+  }
+  await putBuild(build)
 
-  manifest.builds = [build, ...manifest.builds].slice(0, MAX_BUILDS)
-  manifest.updatedAt = new Date().toISOString()
-  await putManifest(manifest)
-
-  // Reflect the outcome on the PR (best-effort).
-  if (owner && repo) {
-    const passed = build.status === "passed"
-    await setCommitStatus(
-      owner,
-      repo,
-      sha,
-      passed ? "success" : "failure",
-      reviewUrl(slug(project), buildId),
-      passed
-        ? "No visual changes"
-        : `${build.summary.changed} changed, ${build.summary.new} new — review required`,
+  // Fan out the diffing. With QStash, enqueue and return immediately. Without
+  // it (local dev), process inline so the loop still completes.
+  if (qstashConfigured()) {
+    await Promise.all(
+      chunks.map((inputsChunk, i) =>
+        publishDiffJob({
+          project,
+          branch,
+          buildId,
+          commit,
+          chunk: i,
+          inputs: inputsChunk,
+        }),
+      ),
     )
+  } else {
+    for (let i = 0; i < chunks.length; i++) {
+      await processChunk(project, branch, buildId, commit, i, chunks[i])
+    }
+    await tryFinalize(project, branch, buildId)
   }
 
   return Response.json({
     buildId,
-    status: build.status,
-    summary: build.summary,
+    status: "pending",
+    snapshots: inputs.length,
+    chunks: chunks.length,
+    mode: qstashConfigured() ? "async" : "inline",
     reviewUrl: reviewUrl(slug(project), buildId),
   })
 }

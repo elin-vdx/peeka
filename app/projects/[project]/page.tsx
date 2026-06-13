@@ -1,7 +1,7 @@
 import { StatusBadge } from "@/components/StatusBadge"
 import { auth } from "@/auth"
-import { getManifest, listBranches } from "@/lib/peeka/storage"
-import type { Build } from "@/lib/peeka/types"
+import { getIndex, listBranches } from "@/lib/peeka/storage"
+import type { BuildIndexEntry } from "@/lib/peeka/types"
 import Link from "next/link"
 import { redirect } from "next/navigation"
 
@@ -19,12 +19,10 @@ export default async function ProjectPage({
   const { project } = await params
   const branches = await listBranches(project)
 
-  // Load every branch manifest and merge their builds, newest first.
-  const manifests = await Promise.all(
-    branches.map((b) => getManifest(project, b)),
-  )
-  const builds: Build[] = manifests
-    .flatMap((m) => m?.builds ?? [])
+  // Read the small per-branch indexes and merge their build entries.
+  const indexes = await Promise.all(branches.map((b) => getIndex(project, b)))
+  const builds: BuildIndexEntry[] = indexes
+    .flatMap((idx) => idx?.builds ?? [])
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
 
   return (

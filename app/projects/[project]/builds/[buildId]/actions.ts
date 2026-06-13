@@ -1,18 +1,25 @@
 "use server"
 
-// Promote a reviewed snapshot (or a whole build) to be the branch baseline.
+// Promote reviewed snapshots to be the branch baseline. Each baseline is its
+// own object, so concurrent approvals never touch a shared file. Per-build
+// review state is recorded in a small sidecar; the build's index status is
+// updated once everything is approved.
 
 import { auth } from "@/auth"
-import { recomputeBuild, reviewUrl } from "@/lib/peeka/build"
+import { computeStatus, reviewUrl } from "@/lib/peeka/build"
 import { setCommitStatus } from "@/lib/peeka/github"
 import {
-  baselineKey as buildBaselineKey,
+  baselineImageKey,
   copyObject,
-  getManifest,
-  putManifest,
+  getBuild,
+  getReviewSidecar,
+  pairKey,
+  putBaseline,
+  putReviewSidecar,
   slug,
+  updateIndex,
 } from "@/lib/peeka/storage"
-import type { SnapshotResult } from "@/lib/peeka/types"
+import type { BuildRecord, ReviewSidecar, SnapshotResult } from "@/lib/peeka/types"
 import { revalidatePath } from "next/cache"
 
 async function requireUser() {
@@ -20,24 +27,54 @@ async function requireUser() {
   if (!session?.user) throw new Error("unauthorized")
 }
 
-// Copy a snapshot's new image to its branch-baseline key and record it in the
-// manifest's baselines map. Mutates the passed snapshot in place.
+// Copy a snapshot's new image to its branch-baseline key and write the
+// per-baseline metadata object.
 async function promote(
   project: string,
   branch: string,
-  baselines: Record<string, import("@/lib/peeka/types").BaselineEntry>,
   snap: SnapshotResult,
 ) {
-  const dest = buildBaselineKey(project, branch, snap.name, snap.variant)
+  const dest = baselineImageKey(project, branch, snap.name, snap.variant)
   await copyObject(snap.newImageKey, dest)
-  baselines[`${snap.key}::${slug(snap.variant)}`] = {
+  await putBaseline(project, branch, snap.name, snap.variant, {
     imageKey: dest,
     commit: snap.newImageKey.split("/")[2] ?? "",
     width: snap.width,
     height: snap.height,
     approvedAt: new Date().toISOString(),
+  })
+}
+
+// Recompute the build's status using the sidecar overrides and update the
+// per-branch index entry.
+async function syncIndexStatus(
+  project: string,
+  branch: string,
+  build: BuildRecord,
+  sidecar: ReviewSidecar,
+) {
+  const snapshots = build.snapshots.map((s) => {
+    const override = sidecar[pairKey(s.key, s.variant)]
+    return override ? { ...s, review: override } : s
+  })
+  const status = computeStatus(snapshots)
+  await updateIndex(project, branch, (index) => ({
+    ...index,
+    builds: index.builds.map((e) =>
+      e.id === build.id ? { ...e, status } : e,
+    ),
+  }))
+  if (status === "passed" && build.github) {
+    const { owner, repo, sha } = build.github
+    await setCommitStatus(
+      owner,
+      repo,
+      sha,
+      "success",
+      reviewUrl(slug(project), build.id),
+      "Visual changes approved",
+    )
   }
-  snap.review = "approved"
 }
 
 export async function approveSnapshot(
@@ -48,21 +85,20 @@ export async function approveSnapshot(
   variant: string,
 ) {
   await requireUser()
-  const manifest = await getManifest(project, branch)
-  if (!manifest) throw new Error("manifest not found")
-  const build = manifest.builds.find((b) => b.id === buildId)
+  const build = await getBuild(project, branch, buildId)
   if (!build) throw new Error("build not found")
   const snap = build.snapshots.find(
     (s) => s.key === snapshotKey && slug(s.variant) === slug(variant),
   )
   if (!snap) throw new Error("snapshot not found")
 
-  await promote(slug(project), slug(branch), manifest.baselines, snap)
-  applyBuildStatus(manifest, build)
-  manifest.updatedAt = new Date().toISOString()
-  await putManifest(manifest)
-  await maybeFlipGitHubStatus(slug(project), build)
+  await promote(slug(project), slug(branch), snap)
 
+  const sidecar = (await getReviewSidecar(project, branch, buildId)) ?? {}
+  sidecar[pairKey(snapshotKey, variant)] = "approved"
+  await putReviewSidecar(project, branch, buildId, sidecar)
+
+  await syncIndexStatus(project, branch, build, sidecar)
   revalidatePath(`/projects/${project}/builds/${buildId}`)
 }
 
@@ -72,47 +108,19 @@ export async function approveAll(
   buildId: string,
 ) {
   await requireUser()
-  const manifest = await getManifest(project, branch)
-  if (!manifest) throw new Error("manifest not found")
-  const build = manifest.builds.find((b) => b.id === buildId)
+  const build = await getBuild(project, branch, buildId)
   if (!build) throw new Error("build not found")
 
+  const sidecar = (await getReviewSidecar(project, branch, buildId)) ?? {}
   for (const snap of build.snapshots) {
-    if (snap.status !== "unchanged" && snap.review === "needs_review") {
-      await promote(slug(project), slug(branch), manifest.baselines, snap)
+    const pk = pairKey(snap.key, snap.variant)
+    if (snap.status !== "unchanged" && (sidecar[pk] ?? snap.review) === "needs_review") {
+      await promote(slug(project), slug(branch), snap)
+      sidecar[pk] = "approved"
     }
   }
-  applyBuildStatus(manifest, build)
-  manifest.updatedAt = new Date().toISOString()
-  await putManifest(manifest)
-  await maybeFlipGitHubStatus(slug(project), build)
+  await putReviewSidecar(project, branch, buildId, sidecar)
 
+  await syncIndexStatus(project, branch, build, sidecar)
   revalidatePath(`/projects/${project}/builds/${buildId}`)
-}
-
-function applyBuildStatus(
-  manifest: import("@/lib/peeka/types").BranchManifest,
-  build: import("@/lib/peeka/types").Build,
-) {
-  const updated = recomputeBuild(build)
-  build.status = updated.status
-  build.summary = updated.summary
-  manifest.builds = manifest.builds.map((b) => (b.id === build.id ? build : b))
-}
-
-async function maybeFlipGitHubStatus(
-  project: string,
-  build: import("@/lib/peeka/types").Build,
-) {
-  if (build.status === "passed" && build.github) {
-    const { owner, repo, sha } = build.github
-    await setCommitStatus(
-      owner,
-      repo,
-      sha,
-      "success",
-      reviewUrl(project, build.id),
-      "Visual changes approved",
-    )
-  }
 }

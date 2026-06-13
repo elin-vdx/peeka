@@ -11,7 +11,7 @@ const styles: Record<BuildStatus, string> = {
 const labels: Record<BuildStatus, string> = {
   passed: "Passed",
   failed: "Needs review",
-  pending: "Pending",
+  pending: "Diffing…",
 }
 
 export function StatusBadge({ status }: { status: BuildStatus }) {

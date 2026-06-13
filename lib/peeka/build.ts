@@ -1,6 +1,7 @@
-// Shared helpers for build state, used by both ingest and the approve actions.
+// Shared helpers for build state, used by ingest, the diff worker, and the
+// approve actions.
 
-import type { Build, BuildStatus, SnapshotResult } from "./types"
+import type { BuildStatus, SnapshotResult } from "./types"
 
 export function summarize(snapshots: SnapshotResult[]) {
   return {
@@ -19,15 +20,14 @@ export function computeStatus(snapshots: SnapshotResult[]): BuildStatus {
   return pending ? "failed" : "passed"
 }
 
-export function recomputeBuild(build: Build): Build {
-  return {
-    ...build,
-    summary: summarize(build.snapshots),
-    status: computeStatus(build.snapshots),
-  }
-}
-
 export function reviewUrl(project: string, buildId: string): string {
   const base = process.env.APP_URL ?? "http://localhost:3000"
   return `${base}/projects/${encodeURIComponent(project)}/builds/${encodeURIComponent(buildId)}`
+}
+
+// Build the per-chunk slices of an array.
+export function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
 }
