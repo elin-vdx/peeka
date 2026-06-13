@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 
 // In this version of Next.js the `middleware` convention was renamed to
 // `proxy`. We read the Auth.js session and gate the protected routes.
-const protectedRoutes = ["/", "/dashboard"]
+const protectedRoutes = ["/", "/dashboard", "/projects"]
 
 export async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname

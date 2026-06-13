@@ -1,4 +1,5 @@
 import { auth, signOut } from "@/auth"
+import Link from "next/link"
 
 export default async function DashboardPage() {
   // proxy.ts already gates this route; we re-check here as the
@@ -12,6 +13,12 @@ export default async function DashboardPage() {
         Welcome{user?.name ? `, ${user.name}` : ""}
       </h1>
       <p className="text-zinc-600 dark:text-zinc-400">{user?.email}</p>
+      <Link
+        href="/projects"
+        className="flex h-11 items-center justify-center rounded-full border border-zinc-300 px-6 text-sm font-medium transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+      >
+        View projects
+      </Link>
       <form
         action={async () => {
           "use server"
