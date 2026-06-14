@@ -12,12 +12,14 @@ export function summarize(snapshots: SnapshotResult[]) {
   }
 }
 
-// A build passes once nothing is still awaiting review.
+// A build passes only when every new/changed snapshot has been approved.
+// Unchanged snapshots never block; a snapshot left needs_review OR rejected
+// keeps the build failed (so a rejection stays unsuccessful on GitHub).
 export function computeStatus(snapshots: SnapshotResult[]): BuildStatus {
-  const pending = snapshots.some(
-    (s) => s.status !== "unchanged" && s.review === "needs_review",
+  const blocked = snapshots.some(
+    (s) => s.status !== "unchanged" && s.review !== "approved",
   )
-  return pending ? "failed" : "passed"
+  return blocked ? "failed" : "passed"
 }
 
 export function reviewUrl(project: string, buildId: string): string {

@@ -12,10 +12,12 @@ function imgUrl(key: string | null): string | null {
 export function SnapshotViewer({
   snapshot,
   onApprove,
+  onReject,
 }: {
   snapshot: SnapshotResult
-  // Server action bound to (project, branch, buildId, snapshotKey, variant).
+  // Server actions bound to (project, branch, buildId, snapshotKey, variant).
   onApprove: () => Promise<void>
+  onReject: () => Promise<void>
 }) {
   const [tab, setTab] = useState<Tab>(
     snapshot.diffKey ? "side-by-side" : "side-by-side",
@@ -29,6 +31,7 @@ export function SnapshotViewer({
   const isNew = snapshot.status === "new"
   const isUnchanged = snapshot.status === "unchanged"
   const approved = snapshot.review === "approved"
+  const rejected = snapshot.review === "rejected"
 
   return (
     <section className="rounded-lg border border-zinc-200 dark:border-zinc-800">
@@ -62,18 +65,32 @@ export function SnapshotViewer({
               ))}
             </div>
           )}
-          {approved ? (
+          {isUnchanged ? null : approved ? (
             <span className="text-sm font-medium text-green-600 dark:text-green-400">
               ✓ Approved
             </span>
           ) : (
-            <button
-              disabled={pending}
-              onClick={() => startTransition(() => onApprove())}
-              className="rounded-md bg-green-600 px-3 py-1 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-            >
-              {pending ? "Approving…" : "Approve"}
-            </button>
+            <div className="flex items-center gap-2">
+              {rejected && (
+                <span className="text-sm font-medium text-red-600 dark:text-red-400">
+                  ✕ Rejected
+                </span>
+              )}
+              <button
+                disabled={pending}
+                onClick={() => startTransition(() => onReject())}
+                className="rounded-md border border-red-300 px-3 py-1 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+              >
+                {pending ? "…" : "Reject"}
+              </button>
+              <button
+                disabled={pending}
+                onClick={() => startTransition(() => onApprove())}
+                className="rounded-md bg-green-600 px-3 py-1 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+              >
+                {pending ? "Approving…" : "Approve"}
+              </button>
+            </div>
           )}
         </div>
       </header>

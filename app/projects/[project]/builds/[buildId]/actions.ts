@@ -64,15 +64,25 @@ async function syncIndexStatus(
       e.id === build.id ? { ...e, status } : e,
     ),
   }))
-  if (status === "passed" && build.github) {
+  // Reflect the current state on the PR: green only when everything is
+  // approved; otherwise keep it red (covers reject and partial approval).
+  if (build.github) {
     const { owner, repo, sha } = build.github
+    const passed = status === "passed"
+    const rejected = snapshots.some(
+      (s) => s.status !== "unchanged" && s.review === "rejected",
+    )
     await setCommitStatus(
       owner,
       repo,
       sha,
-      "success",
+      passed ? "success" : "failure",
       reviewUrl(slug(project), build.id),
-      "Visual changes approved",
+      passed
+        ? "Visual changes approved"
+        : rejected
+          ? "Visual changes rejected — review required"
+          : "Visual changes need review",
     )
   }
 }
@@ -96,6 +106,31 @@ export async function approveSnapshot(
 
   const sidecar = (await getReviewSidecar(project, branch, buildId)) ?? {}
   sidecar[pairKey(snapshotKey, variant)] = "approved"
+  await putReviewSidecar(project, branch, buildId, sidecar)
+
+  await syncIndexStatus(project, branch, build, sidecar)
+  revalidatePath(`/projects/${project}/builds/${buildId}`)
+}
+
+export async function rejectSnapshot(
+  project: string,
+  branch: string,
+  buildId: string,
+  snapshotKey: string,
+  variant: string,
+) {
+  await requireUser()
+  const build = await getBuild(project, branch, buildId)
+  if (!build) throw new Error("build not found")
+  const snap = build.snapshots.find(
+    (s) => s.key === snapshotKey && slug(s.variant) === slug(variant),
+  )
+  if (!snap) throw new Error("snapshot not found")
+
+  // Reject does NOT promote a baseline; it just records the decision so the
+  // build stays unsuccessful on GitHub.
+  const sidecar = (await getReviewSidecar(project, branch, buildId)) ?? {}
+  sidecar[pairKey(snapshotKey, variant)] = "rejected"
   await putReviewSidecar(project, branch, buildId, sidecar)
 
   await syncIndexStatus(project, branch, build, sidecar)

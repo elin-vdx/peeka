@@ -12,7 +12,7 @@ import {
 import type { BuildRecord, SnapshotResult } from "@/lib/peeka/types"
 import Link from "next/link"
 import { notFound, redirect } from "next/navigation"
-import { approveAll, approveSnapshot } from "./actions"
+import { approveAll, approveSnapshot, rejectSnapshot } from "./actions"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -111,11 +111,22 @@ export default async function BuildPage({
               snap.variant,
             )
           }
+          const reject = async () => {
+            "use server"
+            await rejectSnapshot(
+              project,
+              branch,
+              buildId,
+              snap.key,
+              snap.variant,
+            )
+          }
           return (
             <SnapshotViewer
               key={`${snap.key}::${snap.variant}`}
               snapshot={snap}
               onApprove={approve}
+              onReject={reject}
             />
           )
         })}
