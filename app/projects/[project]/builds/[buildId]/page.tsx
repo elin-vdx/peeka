@@ -1,4 +1,5 @@
 import { StatusBadge } from "@/components/StatusBadge"
+import { SnapshotList } from "@/components/SnapshotList"
 import { SnapshotViewer } from "@/components/SnapshotViewer"
 import { auth } from "@/auth"
 import { computeStatus } from "@/lib/peeka/build"
@@ -99,8 +100,8 @@ export default async function BuildPage({
         )}
       </div>
 
-      <div className="flex flex-col gap-6">
-        {snapshots.map((snap) => {
+      <SnapshotList
+        items={snapshots.map((snap) => {
           const approve = async () => {
             "use server"
             await approveSnapshot(
@@ -121,16 +122,21 @@ export default async function BuildPage({
               snap.variant,
             )
           }
-          return (
-            <SnapshotViewer
-              key={`${snap.key}::${snap.variant}`}
-              snapshot={snap}
-              onApprove={approve}
-              onReject={reject}
-            />
-          )
+          return {
+            id: `${snap.key}::${snap.variant}`,
+            status: snap.status,
+            node: (
+              <SnapshotViewer
+                snapshot={snap}
+                onApprove={approve}
+                onReject={reject}
+                // Unchanged snapshots start collapsed.
+                defaultCollapsed={snap.status === "unchanged"}
+              />
+            ),
+          }
         })}
-      </div>
+      />
     </div>
   )
 }

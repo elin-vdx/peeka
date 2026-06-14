@@ -13,15 +13,18 @@ export function SnapshotViewer({
   snapshot,
   onApprove,
   onReject,
+  defaultCollapsed = false,
 }: {
   snapshot: SnapshotResult
   // Server actions bound to (project, branch, buildId, snapshotKey, variant).
   onApprove: () => Promise<void>
   onReject: () => Promise<void>
+  defaultCollapsed?: boolean
 }) {
   const [tab, setTab] = useState<Tab>(
     snapshot.diffKey ? "side-by-side" : "side-by-side",
   )
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
   const [pending, startTransition] = useTransition()
 
   const baselineUrl = imgUrl(snapshot.baselineKey)
@@ -36,19 +39,31 @@ export function SnapshotViewer({
   return (
     <section className="rounded-lg border border-zinc-200 dark:border-zinc-800">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-        <div>
-          <h3 className="font-medium">{snapshot.name}</h3>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {snapshot.variant}
-            {!isNew && !isUnchanged && (
-              <> · {snapshot.percent.toFixed(2)}% changed</>
-            )}
-            {isNew && <> · new</>}
-            {isUnchanged && <> · unchanged</>}
-          </p>
-        </div>
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex items-center gap-2 text-left"
+          aria-expanded={!collapsed}
+        >
+          <span
+            className={`text-zinc-400 transition-transform ${collapsed ? "" : "rotate-90"}`}
+            aria-hidden
+          >
+            ▶
+          </span>
+          <span>
+            <span className="block font-medium">{snapshot.name}</span>
+            <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+              {snapshot.variant}
+              {!isNew && !isUnchanged && (
+                <> · {snapshot.percent.toFixed(2)}% changed</>
+              )}
+              {isNew && <> · new</>}
+              {isUnchanged && <> · unchanged</>}
+            </span>
+          </span>
+        </button>
         <div className="flex items-center gap-3">
-          {!isNew && !isUnchanged && (
+          {!collapsed && !isNew && !isUnchanged && (
             <div className="flex overflow-hidden rounded-md border border-zinc-200 text-sm dark:border-zinc-700">
               {(["side-by-side", "diff", "swipe"] as Tab[]).map((t) => (
                 <button
@@ -95,6 +110,7 @@ export function SnapshotViewer({
         </div>
       </header>
 
+      {!collapsed && (
       <div className="bg-zinc-50 p-5 dark:bg-black">
         {isNew && newUrl && (
           <div className="flex justify-center">
@@ -129,6 +145,7 @@ export function SnapshotViewer({
           <Swipe baselineUrl={baselineUrl} newUrl={newUrl} />
         )}
       </div>
+      )}
     </section>
   )
 }
