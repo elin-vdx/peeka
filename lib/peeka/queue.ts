@@ -20,7 +20,16 @@ export function qstashConfigured(): boolean {
 
 let client: Client | null = null
 function qstash(): Client {
-  if (!client) client = new Client({ token: process.env.QSTASH_TOKEN! })
+  if (!client) {
+    // The SDK defaults to the EU endpoint. When the token belongs to another
+    // region (e.g. US), set QSTASH_URL to that region's base URL — otherwise
+    // QStash rejects the token with "user not found in this region".
+    const baseUrl = process.env.QSTASH_URL
+    client = new Client({
+      token: process.env.QSTASH_TOKEN!,
+      ...(baseUrl ? { baseUrl } : {}),
+    })
+  }
   return client
 }
 
