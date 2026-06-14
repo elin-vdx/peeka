@@ -26,7 +26,7 @@ import type { BuildRecord, SnapshotInput } from "@/lib/peeka/types"
 import { CHUNK_SIZE } from "@/lib/peeka/types"
 
 export const runtime = "nodejs"
-export const maxDuration = 60
+export const maxDuration = 300
 
 function authorized(req: Request): boolean {
   const expected = process.env.PEEKA_INGEST_TOKEN
@@ -90,15 +90,27 @@ export async function POST(req: Request) {
     return Response.json({ error: "no snapshots provided" }, { status: 400 })
   }
 
-  // Store every upload and record its input metadata (no diffing yet).
-  const inputs: SnapshotInput[] = []
-  for (const file of files) {
-    const fileMeta = meta[file.name] ?? parseFilename(file.name)
-    const name = fileMeta.name
-    const variant = fileMeta.variant
-    const newImageKey = buildSnapshotKey(project, commit, name, variant)
-    await putObject(newImageKey, Buffer.from(await file.arrayBuffer()), "image/png")
-    inputs.push({ name, variant, key: slug(name), newImageKey })
+  // Store every upload and record its input metadata (no diffing yet). Uploads
+  // run in bounded-concurrency batches: a sequential loop over hundreds of
+  // snapshots is one R2 round-trip each and blows past the function timeout.
+  const UPLOAD_CONCURRENCY = 20
+  const inputs: SnapshotInput[] = new Array(files.length)
+  for (let start = 0; start < files.length; start += UPLOAD_CONCURRENCY) {
+    const batch = files.slice(start, start + UPLOAD_CONCURRENCY)
+    await Promise.all(
+      batch.map(async (file, j) => {
+        const fileMeta = meta[file.name] ?? parseFilename(file.name)
+        const name = fileMeta.name
+        const variant = fileMeta.variant
+        const newImageKey = buildSnapshotKey(project, commit, name, variant)
+        await putObject(
+          newImageKey,
+          Buffer.from(await file.arrayBuffer()),
+          "image/png",
+        )
+        inputs[start + j] = { name, variant, key: slug(name), newImageKey }
+      }),
+    )
   }
 
   const buildId = `${slug(commit).slice(0, 8)}-${Date.now().toString(36)}`
